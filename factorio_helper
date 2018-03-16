@@ -78,7 +78,7 @@ def compute_factories recipe,target_rate,depth=0
         end
       }
     else
-      puts ("\t"*depth+1)+"> #{k} consumption: #{consumption.round(2)}" 
+      puts ("\t"*(depth+1))+"> #{k} consumption: #{consumption.round(2)}" 
     end
   }
   
