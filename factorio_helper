@@ -1,0 +1,106 @@
+#/usr/bin/ruby
+@SPEEDS={"smelting"=>2,"crafting-with-fluid"=>0.75,"crafting"=>0.75,"chemistry"=>1.25,"centrifuging"=>0.75,"rocket-building"=>1, "oil-processing"=>1,"advanced-crafting"=>0.75}
+
+class Recipe
+  attr_accessor :name,:duration,:ingredients,:produces,:category,:production_rate
+  def initialize(s)
+    self.produces={}
+    self.ingredients={}
+    result_factor=1
+    name,category,duration,production,ingredients=s.split("@")
+    production.split(",").each{|x|
+      a,b=x.split(":")
+      self.produces[b]=a.to_i
+      result_factor=a.to_i
+    }
+    ingredients.split(",").each{|x|
+      a,b=x.split(":")
+      self.ingredients[b]=a.to_i
+    }
+    self.duration=duration.to_f
+    self.production_rate=result_factor/(self.duration)
+    self.name=name
+    if category.include? "crafting"
+       category="crafting"
+    end    
+    self.category=category
+  end
+end
+
+
+def compute_factories recipe,target_rate,is_root
+  f_count=(target_rate/recipe.production_rate)
+  if target_rate==-1
+    f_count=1
+  end
+  if is_root
+    f_count=f_count.ceil
+  end
+  factories={recipe.name=>f_count}
+  #puts "recipe : #{recipe.name} production #{recipe.production_rate} target_rate #{target_rate} facto needed #{f_count}"
+  duration=recipe.duration.to_f
+  recipe.ingredients.each{|k,v|
+    ingredient_recipe=@recipes[k]
+    if ingredient_recipe!=nil
+      consumption=(f_count*v.to_f)/duration
+      production=ingredient_recipe.production_rate
+      #puts "ingredient #{k} consumption #{consumption} production #{production}"
+      #factories[k]=(consumption/production)
+      ingredient_factories=compute_factories ingredient_recipe,consumption,false
+      ingredient_factories.each{|ingr,factos|
+        if factories[ingr]!=nil
+          factories[ingr]+=factos
+        else
+          factories[ingr]=factos
+        end
+      }
+    end
+  }
+  factories
+end
+
+def pretty_print factories,recipe,target_rate
+  if target_rate >0
+    puts "Production requirement for #{target_rate} #{recipe.gsub("-"," ").upcase} per second"
+  else
+    puts "Production requirement for 1 factory producing  #{recipe.gsub("-"," ").upcase} "
+  end
+  factories.keys.sort_by{|x| @recipes[x].category}.each{|k|
+    machine="crafting machine"
+    if @recipes[k].category == "smelting"
+      machine="furnace"
+    elsif @recipes[k].category=="chemistry"
+      machine="chemistry plant"
+    end
+    if factories[k]>1
+      machine+="s"
+    end
+    name=k.gsub("-"," ").upcase
+    puts "> #{factories[k].ceil} #{machine} producing #{name}"
+  }
+end
+
+
+if ARGV.size < 2
+  puts "Usage: helper <recipes_file> <recipe> (<target rate>)"
+  exit
+end
+target_rate=-1
+if ARGV.size == 3
+  target_rate=ARGV[2].to_f
+end
+@recipes={}
+inp=File.new(ARGV[0],"r")
+while line=inp.gets do
+  current=Recipe.new(line.chomp)
+  if  @SPEEDS.keys.include?(current.category)
+    current.production_rate*=@SPEEDS[current.category].to_f
+    current.duration/=@SPEEDS[current.category].to_f
+    @recipes[current.name]=current
+  else
+    puts "skipping recipe #{current.name}, category #{current.category}"
+  end
+end
+inp.close
+to_craft=ARGV[1]
+pretty_print compute_factories(@recipes[to_craft],target_rate,true),to_craft,target_rate
