@@ -66,8 +66,8 @@ def compute_factories recipe,target_rate,depth=0
   
   recipe.ingredients.each{|k,v| # for each pair (ingredient,amount)
     ingredient_recipe=@recipes[k] # retrieve the recipe with its name
+    consumption=(f_count*v.to_f)/duration # compute the per second consumption of this ingredient by f_count factories of the root recipe
     if ingredient_recipe!=nil # if the recipe was sucessfully retrieved
-      consumption=(f_count*v.to_f)/duration # compute the per second consumption of this ingredient by f_count factories of the root recipe
       production=ingredient_recipe.production_rate # compute the production rate of the ingredient
       ingredient_factories=compute_factories ingredient_recipe,consumption,depth+1 # recursively compute the factories requirements for the ingredient
       ingredient_factories.each{|ingr,factos| # sum the factories requirements for the ingredient with existing ones
@@ -77,6 +77,8 @@ def compute_factories recipe,target_rate,depth=0
           factories[ingr]=factos
         end
       }
+    else
+      puts ("\t"*depth+1)+"> #{k} consumption: #{consumption.round(2)}" 
     end
   }
   
