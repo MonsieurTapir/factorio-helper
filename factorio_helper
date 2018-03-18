@@ -1,144 +1,159 @@
 #! /usr/bin/ruby
+require 'optparse'
+require "./configuration.rb"
+require "./recipe.rb"
 
-# TODO :  Config file containing the crafting speeds for the sake of parameterization
-@SPEEDS={"smelting"=>2,"crafting-with-fluid"=>0.75,"crafting"=>0.75,"chemistry"=>1.25,"centrifuging"=>0.75,"rocket-building"=>1, "oil-processing"=>1,"advanced-crafting"=>0.75} # Crafting speed depending on the category 
+class Solver
+  attr_accessor :recipes,:speeds,:to_craft,:target_rate
+  def initialize config
 
-class Recipe
-  attr_accessor :name,:duration,:ingredients,:produces,:category,:production_rate
- 
-  # Constructor from string describing a recipe using format
-  # <name>@<category>@<duration>@<quantity1>:<product1>,<quantity2>:<product2>...@<quantity1>:<ingredient1>,<quantity2>:<ingredient2>...
-  def initialize(s)
-    self.produces={}
-    self.ingredients={}
-    result_factor=1
+    @to_craft=config.options["to_craft"]
+    @target_rate=config.options["target_rate"]
+    @recipes={}
+    @speeds={"smelting"=>2,"crafting"=>0.75,"chemistry"=>1.25,"centrifuging"=>0.75,"rocket-building"=>1 ,"oil-processing"=>1,"drilling"=>0.35,"drill-power"=>2.5}
+
+    @speeds.keys.each do |x|
+      if config.options[x]
+        @speeds[x]=config.options[x].to_f
+      end
+      if config.options["speed-mod"]
+        percent=config.options["speed-mod"].to_f*2
+        if config.options["beacon"]
+          percent+=(config.options["beacon"].to_f*percent)/2
+        end
+        if x!="drill-power"
+          @speeds[x]*=(1+(percent.to_f/100))
+        end
+        puts "#{x} speed #{@speeds[x]}"
+      end
+    end
+    inp=File.new(config.options["recipes"],"r")
+    while line=inp.gets do
+      current=Recipe.new(line.chomp)
+      if current.category=="drilling"
+        current=DrillingRecipe.new(line.chomp)
+        current.duration=current.duration/((@speeds["drill-power"]-current.hardness)*@speeds["drilling"])
+        current.production_rate=1/current.duration
+      else
+        if  @speeds.keys.include?(current.category) # Is the category known ?
+          current.production_rate*=@speeds[current.category].to_f # Adjusting the production rate with the crafting speed
+          current.duration/=@speeds[current.category].to_f # Adjusting the duration with the crafting speed
+        else 
+          puts "skipping recipe #{current.name}, category #{current.category}"
+        end
+      end
+      @recipes[current.name]=current # Emplacing the recipe in the recipes hash
+    end
+    inp.close
+  end
+  
+  # compute_factores Recipe recipe, double target_rate, integer depth=0
+  # Input : Recipe recipe, Double target_rate
+  # Returns : Hash : String -> Double
+  #                  ingredient -> number of factories required to ensure <target_rate> production of <recipe>
+  # Note that the algorithm computes and adds the requirements recursively.
+  # Example : compute_factories <Recipe for electronic circuit>, 1
+  # returns : {"electronic-circuit" => 0.66666666,
+  #           "copper-cable" => 1.0,
+  #           "iron-plate" => 1.75,
+  #           "copper-plate" => 2.625}
+  # meaning that 0.6666666  machines crafting electronic circuits will ensure a production of 1 electronic circuit per second.
+  # To ensure 100% uptime on these machines, 1 machine crafting copper cables,
+  # 1.75 furnaces smelting iron plates and 2.625 furnaces smelting copper plate are required.
+  def compute_factories recipe,target_rate,depth=0
+    if depth==0
+      puts "-"*100
+      puts "Computing factories requirements"
+      puts "-"*100
+    end
+    f_count=(target_rate/recipe.production_rate) # compute the number of factories needed to reach the target rate
     
-    name,category,duration,production,ingredients=s.split("@")
+    if target_rate==-1 # dirty, if target_rate is equal to -1, we compute the dependencies for 1 factory
+      f_count=1
+    end
+    puts ("\t"*depth)+"> #{recipe.name} : #{f_count.round(2)} factories" # Production chain output 
     
-    production.split(",").each{|x|
-      a,b=x.split(":")
-      self.produces[b]=a.to_i
-      result_factor=a.to_i # assuming the recipe produces 1 product exactly....
+    factories={recipe.name=>f_count} # initializing the hash to be returned
+    duration=recipe.duration.to_f # for ease of use
+    recipe.ingredients.each{|k,v| # for each pair (ingredient,amount)
+      ingredient_recipe=@recipes[k] # retrieve the recipe with its name
+      consumption=(f_count*v.to_f)/duration # compute the per second consumption of this ingredient by f_count factories of the root recipe
+      if ingredient_recipe!=nil # if the recipe was sucessfully retrieved
+        production=ingredient_recipe.production_rate # compute the production rate of the ingredient
+        ingredient_factories=compute_factories ingredient_recipe,consumption,depth+1 # recursively compute the factories requirements for the ingredient
+        ingredient_factories.each{|ingr,factos| # sum the factories requirements for the ingredient with existing ones
+          if factories[ingr]!=nil
+            factories[ingr]+=factos
+          else
+            factories[ingr]=factos
+          end
+        }
+      else
+        puts ("\t"*(depth+1))+"> #{k} consumption: #{consumption.round(2)}" 
+      end
     }
     
-    ingredients.split(",").each{|x|
-      a,b=x.split(":")
-      self.ingredients[b]=a.to_i
-    }
-    self.duration=duration.to_f
-    self.production_rate=result_factor/(self.duration)
-    self.name=name
-    if category.include? "crafting"
-       category="crafting"
-    end    
-    self.category=category
+    if depth==0 # Clean output of the total factories
+      print_total factories,recipe.name,target_rate
+    end
+    factories
   end
-end
 
-# compute_factores Recipe recipe, double target_rate, integer depth=0
-# Input : Recipe recipe, Double target_rate
-# Returns : Hash : String -> Double
-#                  ingredient -> number of factories required to ensure <target_rate> production of <recipe>
-# Note that the algorithm computes and adds the requirements recursively.
-# Example : compute_factories <Recipe for electronic circuit>, 1
-# returns : {"electronic-circuit" => 0.66666666,
-#           "copper-cable" => 1.0,
-#           "iron-plate" => 1.75,
-#           "copper-plate" => 2.625}
-# meaning that 0.6666666  machines crafting electronic circuits will ensure a production of 1 electronic circuit per second.
-# To ensure 100% uptime on these machines, 1 machine crafting copper cables,
-# 1.75 furnaces smelting iron plates and 2.625 furnaces smelting copper plate are required.
-def compute_factories recipe,target_rate,depth=0
-  if depth==0
-    puts "-"*@TERM_WIDTH
-    puts "Computing factories requirements for #{target_rate} #{recipe.name} per second"
-    puts "-"*@TERM_WIDTH
+  def print_total factories,recipe,target_rate
+    puts "-"*100
+    if target_rate >0
+      puts "Total factories requirements (rounded up) for #{target_rate} #{recipe.gsub("-"," ").upcase} per second"
+    else
+      puts "Total factories requirements (rounded up) for 1 factory producing  #{recipe.gsub("-"," ").upcase} "
+    end
+    puts "-"*100
+    factories.keys.sort_by{|x| @recipes[x].category}.each{|k|
+      machine="crafting machine"
+      if @recipes[k].category == "smelting"
+        machine="furnace"
+      elsif @recipes[k].category=="chemistry"
+        machine="chemistry plant"
+      elsif @recipes[k].category=="drilling"
+        machine="drill"
+      end
+      if factories[k]>1
+        machine+="s"
+      end
+      name=k.gsub("-"," ").upcase
+      puts "#{factories[k].ceil} (#{factories[k].round(2)}) #{machine} producing #{name}"
+    }
   end
-  f_count=(target_rate/recipe.production_rate) # compute the number of factories needed to reach the target rate
-  
-  if target_rate==-1 # dirty, if target_rate is equal to -1, we compute the dependencies for 1 factory
-    f_count=1
-  end
-  puts ("\t"*depth)+"> #{recipe.name} : #{f_count.round(2)} factories" # Production chain output 
-  
-  factories={recipe.name=>f_count} # initializing the hash to be returned
-  duration=recipe.duration.to_f # for ease of use
-  
-  recipe.ingredients.each{|k,v| # for each pair (ingredient,amount)
-    ingredient_recipe=@recipes[k] # retrieve the recipe with its name
-    consumption=(f_count*v.to_f)/duration # compute the per second consumption of this ingredient by f_count factories of the root recipe
-    if ingredient_recipe!=nil # if the recipe was sucessfully retrieved
-      production=ingredient_recipe.production_rate # compute the production rate of the ingredient
-      ingredient_factories=compute_factories ingredient_recipe,consumption,depth+1 # recursively compute the factories requirements for the ingredient
-      ingredient_factories.each{|ingr,factos| # sum the factories requirements for the ingredient with existing ones
-        if factories[ingr]!=nil
-          factories[ingr]+=factos
+  def go
+    puts @to_craft
+    if @to_craft.class=="String".class
+      if @recipes[@to_craft]
+        self.compute_factories(@recipes[@to_craft],@target_rate)
+      else
+        puts "Error: Recipe for #{@to_craft} not found"
+      end
+    else
+      factos={}
+      @to_craft.each{|x|
+        if @recipes[x]
+          self.compute_factories(@recipes[x],@target_rate).each{|k,v|
+            if factos[k]==nil
+              factos[k]=0
+            end
+            factos[k]+=v
+          }
         else
-          factories[ingr]=factos
+           puts "Error: Recipe for #{x} not found"
         end
       }
-    else
-      puts ("\t"*(depth+1))+"> #{k} consumption: #{consumption.round(2)}" 
+      print_total factos,@to_craft.join(" and "),@target_rate
     end
-  }
-  
-  if depth==0 # Clean output of the total factories
-    print_total factories,recipe.name,target_rate
-  end
-  factories
-end
-
-def print_total factories,recipe,target_rate
-  puts "-"*@TERM_WIDTH
-  if target_rate >0
-    puts "Total factories requirements (rounded up) for #{target_rate} #{recipe.gsub("-"," ").upcase} per second"
-  else
-    puts "Total factories requirements (rounded up) for 1 factory producing  #{recipe.gsub("-"," ").upcase} "
-  end
-  puts "-"*@TERM_WIDTH
-  factories.keys.sort_by{|x| @recipes[x].category}.each{|k|
-    machine="crafting machine"
-    if @recipes[k].category == "smelting"
-      machine="furnace"
-    elsif @recipes[k].category=="chemistry"
-      machine="chemistry plant"
-    end
-    if factories[k]>1
-      machine+="s"
-    end
-    name=k.gsub("-"," ").upcase
-    puts "#{factories[k].ceil} #{machine} producing #{name}"
-  }
-end
-
-# TODO : CLEAN ARGUMENTS PARSING
-if ARGV.size < 2
-  puts "Usage: helper <recipes_file> <recipe> (<target rate>)"
-  exit
-end
-
-target_rate=-1
-if ARGV.size == 3
-  target_rate=ARGV[2].to_f
-end
-# ENDTODO
-
-@TERM_WIDTH=`tput cols`.to_i
-@recipes={} #Storing recipes indexed by their name
-
-# READING RECIPES FROM FILE GIVEN IN ARG
-inp=File.new(ARGV[0],"r")
-while line=inp.gets do
-  current=Recipe.new(line.chomp)
-  if  @SPEEDS.keys.include?(current.category) # Is the category known to the program ?
-    current.production_rate*=@SPEEDS[current.category].to_f # Adjusting the production rate with the crafting speed
-    current.duration/=@SPEEDS[current.category].to_f # Adjusting the duration with the crafting speed
-    @recipes[current.name]=current # Emplacing the recipe in the recipes hash
-  else 
-    puts "skipping recipe #{current.name}, category #{current.category}"
   end
 end
-inp.close
 
-to_craft=ARGV[1].gsub(" ","-").downcase # Reading objective recipe, replacing spaces with hyphens and downcasing
-compute_factories(@recipes[to_craft],target_rate)
+
+conf=Configuration.new
+solver=Solver.new(conf)
+solver.go
+
+# Reading objective recipe, replacing spaces with hyphens and downcasing
+
